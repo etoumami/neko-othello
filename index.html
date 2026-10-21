@@ -245,12 +245,25 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     const on = () => $("sound").checked;
     function audio() {
       if (!ctx) {
+        // On iPhone, game sounds are muted by the silent switch unless the page says it plays media
+        try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
         try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; }
         setup(ctx);
         loadSample(ctx);
       }
-      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      if (ctx.state !== "running") ctx.resume().catch(() => {});
       return ctx;
+    }
+    // Phones only start audio from inside a tap, so on each tap resume the audio and play
+    // a moment of silence, which is what actually switches the sound on in mobile Safari
+    function wake() {
+      const a = audio(); if (!a) return;
+      try {
+        const s = a.createBufferSource();
+        s.buffer = a.createBuffer(1, 1, a.sampleRate);
+        s.connect(a.destination);
+        s.start(0);
+      } catch (e) {}
     }
 
     // The recorded meow, decoded once, with the silence before and after it trimmed off
@@ -394,7 +407,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     }
 
     return {
-      unlock() { if (on()) audio(); },
+      unlock() { if (on()) wake(); },
       // A light "nya" as the disc lands: the black cat a little lower, the white cat a little higher
       // (Uses the recording; the synthesised meow stands in if it hasn't finished loading.)
       place(p) {
@@ -634,7 +647,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     try { localStorage.setItem("othello-sound", $("sound").checked ? "on" : "off"); } catch (e) {}
     sound.unlock();
   });
-  document.addEventListener("pointerdown", () => sound.unlock());
+  // touchend and click count as a real tap on phones; pointerdown alone does not on iPhone
+  ["pointerdown", "touchend", "click", "keydown"].forEach(type =>
+    document.addEventListener(type, () => sound.unlock(), { capture: true, passive: true }));
   $("mode-cpu").addEventListener("click", () => { if (state.mode !== "cpu") reset("cpu"); });
   $("mode-pvp").addEventListener("click", () => { if (state.mode !== "pvp") reset("pvp"); });
 

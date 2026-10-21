@@ -129,6 +129,7 @@ aside { display: grid; gap: 16px; min-width: 0; }
 .controls { display: grid; gap: 10px; }
 .label { font-size: .75rem; color: var(--muted); letter-spacing: .08em; }
 .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg.seg-3 { grid-template-columns: 1fr 1fr 1fr; }
 .seg button { border: 0; border-radius: 0; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
@@ -153,6 +154,29 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .log li .i { color: var(--muted); min-width: 2ch; text-align: right; }
 .log li .disc { width: 10px; }
 .log .empty { color: var(--muted); font-size: .85rem; font-family: var(--font-body); grid-column: 1 / -1; }
+
+.hint { margin: 0; font-size: .8rem; color: var(--muted); line-height: 1.5; }
+
+/* Match record */
+.rec-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.linkbtn {
+  font: inherit; font-size: .75rem; color: var(--muted); background: none; border: 0; padding: 2px 0;
+  text-decoration: underline; cursor: pointer;
+}
+.linkbtn.armed { color: #c0392b; font-weight: 700; }
+.tally { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: .82rem; font-variant-numeric: tabular-nums; }
+.tally th, .tally td { padding: 3px 4px; text-align: right; border-bottom: 1px solid var(--line); }
+.tally th:first-child, .tally td:first-child { text-align: left; }
+.tally thead th { font-weight: 500; color: var(--muted); font-size: .72rem; }
+.log ol.recent {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin-top: 8px; max-height: 150px;
+  font-family: var(--font-body); font-size: .8rem;
+}
+.recent li { display: flex; gap: 8px; align-items: baseline; }
+.recent .when { color: var(--muted); font-family: var(--font-mono); font-size: .75rem; min-width: 9ch; }
+.recent .res { font-weight: 700; }
+.recent .res.win { color: var(--brass); }
+.recent .sc { margin-left: auto; font-family: var(--font-mono); font-size: .75rem; }
 
 .rules { color: var(--muted); font-size: .85rem; max-width: 65ch; }
 .rules summary { cursor: pointer; color: var(--fg); font-weight: 500; }
@@ -186,6 +210,15 @@ button:disabled { opacity: .45; cursor: not-allowed; }
           <button id="mode-cpu" aria-pressed="true">コンピュータ</button>
           <button id="mode-pvp" aria-pressed="false">2人で対戦</button>
         </div>
+        <div class="controls" id="level-box">
+          <span class="label">コンピュータの強さ</span>
+          <div class="seg seg-3" role="group" aria-label="コンピュータの強さ">
+            <button id="level-easy" aria-pressed="false">よわい</button>
+            <button id="level-normal" aria-pressed="true">ふつう</button>
+            <button id="level-hard" aria-pressed="false">つよい</button>
+          </div>
+          <p class="hint" id="level-hint"></p>
+        </div>
         <label class="check"><input type="checkbox" id="hints" checked> 置ける場所を表示する</label>
         <label class="check"><input type="checkbox" id="sound" checked> 効果音を鳴らす</label>
         <div class="row">
@@ -197,6 +230,19 @@ button:disabled { opacity: .45; cursor: not-allowed; }
       <div class="log">
         <span class="label">棋譜</span>
         <ol id="log"></ol>
+      </div>
+
+      <div class="log">
+        <div class="rec-head">
+          <span class="label">対戦記録</span>
+          <button class="linkbtn" id="rec-clear">記録を消す</button>
+        </div>
+        <table class="tally" aria-label="コンピュータとの対戦成績">
+          <thead><tr><th>相手</th><th>勝ち</th><th>負け</th><th>引き分け</th></tr></thead>
+          <tbody id="tally"></tbody>
+        </table>
+        <ol class="recent" id="recent"></ol>
+        <p class="hint">記録はこのスマホ・パソコンのブラウザの中だけに保存されます。</p>
       </div>
     </aside>
   </div>
@@ -504,6 +550,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
       state.log.push({ p: next, sq: "パス" });
     } else {
       state.over = true;
+      recordGame();
     }
     render();
     sound.place(p);
@@ -513,9 +560,80 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     scheduleCpu(chorus);
   }
 
+  // Computer strength, chosen by the player and remembered between visits. Starts at ふつう
+  let level = "normal";
+  const LEVEL_NAME = { easy: "よわい", normal: "ふつう", hard: "つよい" };
+  const LEVEL_HINT = {
+    easy: "よわい：ほとんど思いつきで打ちます。はじめての人や子ども向け。",
+    normal: "ふつう：作戦を考えて打ちますが、ときどきうっかりミスをします。",
+    hard: "つよい：角を取り、角の隣を避け、相手の打てる場所を減らすように打ちます。",
+  };
+
+  // Match record: finished games are kept in this browser only (most recent first, up to 100)
+  const REC_KEY = "othello-records";
+  function loadRecords() {
+    try { const r = JSON.parse(localStorage.getItem(REC_KEY) || "[]"); return Array.isArray(r) ? r : []; } catch (e) { return []; }
+  }
+  let records = loadRecords();
+  function saveRecords() {
+    try { localStorage.setItem(REC_KEY, JSON.stringify(records)); } catch (e) {}
+  }
+  // Called once when a game ends; undoing after the end and finishing again does not count twice
+  function recordGame() {
+    if (state.recorded) return;
+    state.recorded = true;
+    const { b, w } = count(state.board);
+    records.unshift({ t: Date.now(), mode: state.mode, level: state.mode === "cpu" ? level : null, b, w });
+    records = records.slice(0, 100);
+    saveRecords();
+  }
+  function resultOf(r) {
+    if (r.b === r.w) return { text: "引き分け", cls: "" };
+    if (r.mode === "cpu") return r.b > r.w ? { text: "勝ち", cls: "win" } : { text: "負け", cls: "" };
+    return { text: (r.b > r.w ? "黒" : "白") + "の勝ち", cls: "" };
+  }
+  function renderRecords() {
+    const tally = $("tally");
+    tally.textContent = "";
+    for (const l of ["easy", "normal", "hard"]) {
+      const games = records.filter(r => r.mode === "cpu" && r.level === l);
+      const win = games.filter(r => r.b > r.w).length, lose = games.filter(r => r.b < r.w).length;
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${LEVEL_NAME[l]}</td><td>${win}</td><td>${lose}</td><td>${games.length - win - lose}</td>`;
+      tally.appendChild(tr);
+    }
+    const list = $("recent");
+    list.textContent = "";
+    if (!records.length) {
+      const li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = "まだ記録はありません。1局終わるとここに残ります。";
+      list.appendChild(li);
+    }
+    for (const r of records.slice(0, 20)) {
+      const d = new Date(r.t), res = resultOf(r);
+      const when = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      const who = r.mode === "cpu" ? LEVEL_NAME[r.level] || "" : "2人";
+      const li = document.createElement("li");
+      li.innerHTML = `<span class="when">${when}</span><span>${who}</span><span class="res ${res.cls}">${res.text}</span><span class="sc">${r.b}-${r.w}</span>`;
+      list.appendChild(li);
+    }
+  }
+  try { const saved = localStorage.getItem("othello-level"); if (["easy", "normal", "hard"].includes(saved)) level = saved; } catch (e) {}
+
   function cpuMove() {
     const moves = legalMoves(state.board, W);
     if (!moves.length) return;
+    // よわい: plays almost at random, sometimes simply grabbing the most discs
+    if (level === "easy") {
+      const pick = Math.random() < 0.3
+        ? moves.reduce((a, b) => (b.flips.length > a.flips.length ? b : a))
+        : moves[Math.floor(Math.random() * moves.length)];
+      play(pick.r, pick.c);
+      return;
+    }
+    // ふつう: uses the same plan as つよい but with a lot of guesswork mixed in, so it slips up now and then
+    const noise = level === "normal" ? 45 : 1;
     let best = null, bestScore = -Infinity;
     for (const m of moves) {
       // Simulate, then penalise moves that hand the opponent a corner and reward limiting their options
@@ -524,7 +642,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
       for (const [y, x] of m.flips) copy[y][x] = W;
       const theirs = legalMoves(copy, B);
       const givesCorner = theirs.some(t => WEIGHT[t.r][t.c] === 100);
-      const score = WEIGHT[m.r][m.c] + m.flips.length * 0.5 - theirs.length * 1.5 - (givesCorner ? 40 : 0) + Math.random();
+      const score = WEIGHT[m.r][m.c] + m.flips.length * 0.5 - theirs.length * 1.5 - (givesCorner ? 40 : 0) + Math.random() * noise;
       if (score > bestScore) { bestScore = score; best = m; }
     }
     play(best.r, best.c);
@@ -637,6 +755,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     $("undo").disabled = !state.history.length;
     $("mode-cpu").setAttribute("aria-pressed", state.mode === "cpu");
     $("mode-pvp").setAttribute("aria-pressed", state.mode === "pvp");
+    // Strength only matters against the computer
+    $("level-box").hidden = state.mode !== "cpu";
+    for (const l of ["easy", "normal", "hard"]) $("level-" + l).setAttribute("aria-pressed", level === l);
+    $("level-hint").textContent = LEVEL_HINT[level];
+    renderRecords();
   }
 
   $("undo").addEventListener("click", undo);
@@ -652,6 +775,33 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     document.addEventListener(type, () => sound.unlock(), { capture: true, passive: true }));
   $("mode-cpu").addEventListener("click", () => { if (state.mode !== "cpu") reset("cpu"); });
   $("mode-pvp").addEventListener("click", () => { if (state.mode !== "pvp") reset("pvp"); });
+  // Clearing asks for a second tap within a few seconds, so one stray tap can't wipe the record
+  let clearTimer = null;
+  $("rec-clear").addEventListener("click", () => {
+    const btn = $("rec-clear");
+    if (!btn.classList.contains("armed")) {
+      btn.classList.add("armed");
+      btn.textContent = "もう一度押すと消えます";
+      clearTimeout(clearTimer);
+      clearTimer = setTimeout(() => { btn.classList.remove("armed"); btn.textContent = "記録を消す"; }, 4000);
+      return;
+    }
+    clearTimeout(clearTimer);
+    records = [];
+    saveRecords();
+    btn.classList.remove("armed");
+    btn.textContent = "記録を消す";
+    renderRecords();
+  });
+
+  // Changing the strength takes effect from the computer's next move; the game in progress carries on
+  for (const l of ["easy", "normal", "hard"]) {
+    $("level-" + l).addEventListener("click", () => {
+      level = l;
+      try { localStorage.setItem("othello-level", l); } catch (e) {}
+      render();
+    });
+  }
 
   function start(saved) {
     state = saved && saved.state ? saved.state : initial("cpu");
